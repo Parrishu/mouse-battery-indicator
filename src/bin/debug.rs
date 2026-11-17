@@ -1,4 +1,4 @@
-use headset_battery_indicator::run;
+use mouse_battery_indicator::run;
 use log::error;
 use simplelog::{ConfigBuilder, TermLogger};
 

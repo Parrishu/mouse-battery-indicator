@@ -2,7 +2,7 @@
 
 use std::fs::File;
 
-use headset_battery_indicator::run;
+use mouse_battery_indicator::run;
 use log::error;
 use simplelog::{ConfigBuilder, WriteLogger};
 
@@ -24,7 +24,7 @@ pub fn init_file_logger() -> anyhow::Result<()> {
             let log_file = File::options()
                 .append(true)
                 .create(true)
-                .open(current_exe.parent().unwrap().join("headset-battery-indicator.log"))?;
+                .open(current_exe.parent().unwrap().join("mouse-battery-indicator.log"))?;
 
             WriteLogger::init(
                 log::LevelFilter::Info,

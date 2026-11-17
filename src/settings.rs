@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde_derive::{Deserialize, Serialize};
 
-// This struct is parsed from either registry settings or headset-battery-indicator-settings.toml if in portable mode.
+// This struct is parsed from either registry settings or mouse-battery-indicator-settings.toml if in portable mode.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub struct Settings {
     #[serde(default, rename = "NotificationsEnabled")]
@@ -17,7 +17,7 @@ impl Settings {
         let settings_path = exe_path
             .parent()
             .context("getting parent directory of executable")?
-            .join("headset-battery-indicator-settings.toml");
+            .join("mouse-battery-indicator-settings.toml");
         Ok(settings_path)
     }
 
@@ -57,7 +57,7 @@ impl Settings {
     pub fn load() -> Result<Self> {
         let hkcu = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER);
         let (key, _) = hkcu
-            .create_subkey("Software\\HeadsetBatteryIndicator")
+            .create_subkey("Software\\MouseBatteryIndicator")
             .context("accessing registry key")?;
 
         let settings: Settings = key.decode().context("decoding registry values")?;
@@ -69,7 +69,7 @@ impl Settings {
     pub fn save(&self) -> Result<()> {
         let hkcu = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER);
         let (key, _) = hkcu
-            .create_subkey("Software\\HeadsetBatteryIndicator")
+            .create_subkey("Software\\MouseBatteryIndicator")
             .context("accessing registry key")?;
 
         key.encode(self).context("encoding settings to registry")?;

@@ -3,7 +3,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 const GITHUB_API_URL: &str =
-    "https://api.github.com/repos/aarol/headset-battery-indicator/releases/latest";
+    "https://api.github.com/repos/Parrishu/mouse-battery-indicator/releases/latest";
 
 /// Spawns a background thread to check for new versions.
 /// Returns a receiver that will receive true if an update is available.
@@ -33,7 +33,7 @@ fn check_for_updates(current_version: &str) -> Result<bool, Box<dyn std::error::
     debug!("Checking for updates...");
 
     let response: GithubRelease = ureq::get(GITHUB_API_URL)
-        .header("User-Agent", "headset-battery-indicator")
+        .header("User-Agent", "mouse-battery-indicator")
         .header("Accept", "application/vnd.github.v3+json")
         .call()?
         .body_mut()

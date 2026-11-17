@@ -2,7 +2,7 @@ pub fn t(key: Key) -> &'static str {
     use Key::*;
     match *LANG {
         Lang::En => match key {
-            no_headset_found => "No headset found",
+            no_mouse_found => "G Pro X Superlight 2 not found",
             view_logs => "View logs",
             quit_program => "Close",
             device_charging => "(Charging)",
@@ -15,7 +15,7 @@ pub fn t(key: Key) -> &'static str {
             update_available => "Update available",
         },
         Lang::Fi => match key {
-            no_headset_found => "Kuulokkeita ei löytynyt",
+            no_mouse_found => "G Pro X Superlight 2 -hiirtä ei löytynyt",
             view_logs => "Näytä lokitiedostot",
             quit_program => "Sulje",
             device_charging => "(Latautuu)",
@@ -28,7 +28,7 @@ pub fn t(key: Key) -> &'static str {
             update_available => "Päivitys saatavilla",
         },
         Lang::De => match key {
-            no_headset_found => "Kein Headset gefunden",
+            no_mouse_found => "G Pro X Superlight 2 nicht gefunden",
             view_logs => "Protokolle anzeigen",
             quit_program => "Beenden",
             device_charging => "(Wird geladen)",
@@ -41,7 +41,7 @@ pub fn t(key: Key) -> &'static str {
             update_available => "Update verfügbar",
         },
         Lang::It => match key {
-            no_headset_found => "Nessuna cuffia trovata",
+            no_mouse_found => "G Pro X Superlight 2 non trovato",
             view_logs => "Visualizza file di log",
             quit_program => "Chiudi",
             device_charging => "(In carica)",
@@ -54,7 +54,7 @@ pub fn t(key: Key) -> &'static str {
             update_available => "Aggiornamento disponibile",
         },
         Lang::Pt => match key {
-            no_headset_found => "Nenhum headset encontrado",
+            no_mouse_found => "G Pro X Superlight 2 nao encontrado",
             view_logs => "Ver registos",
             quit_program => "Fechar",
             device_charging => "(A carregar)",
@@ -67,7 +67,7 @@ pub fn t(key: Key) -> &'static str {
             update_available => "Atualização disponível",
         },
         Lang::Zh => match key {
-            no_headset_found => "未找到耳机",
+            no_mouse_found => "未找到 G Pro X Superlight 2",
             view_logs => "查看日志",
             quit_program => "关闭",
             device_charging => "(充电中)",
@@ -80,7 +80,7 @@ pub fn t(key: Key) -> &'static str {
             update_available => "有更新可用",
         },
         Lang::Es => match key {
-            no_headset_found => "No se encontraron auriculares",
+            no_mouse_found => "No se encontro G Pro X Superlight 2",
             view_logs => "Ver registros",
             quit_program => "Cerrar",
             device_charging => "(Cargando)",
@@ -108,7 +108,7 @@ pub enum Lang {
 
 #[allow(non_camel_case_types)]
 pub enum Key {
-    no_headset_found,
+    no_mouse_found,
     view_logs,
     quit_program,
     device_charging,

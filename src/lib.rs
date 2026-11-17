@@ -1,4 +1,4 @@
-mod headset_control;
+mod mouse_control;
 mod icon;
 mod lang;
 mod menu;
@@ -32,7 +32,7 @@ use winit::{
     window::Theme,
 };
 
-use crate::{headset_control::BatteryStatus, notify::Notifier, settings::Settings};
+use crate::{mouse_control::BatteryStatus, notify::Notifier, settings::Settings};
 use std::sync::mpsc;
 
 struct AppState {
@@ -107,7 +107,7 @@ impl AppState {
     }
 
     fn update(&mut self, _event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
-        let result = headset_control::query_device();
+        let result = mouse_control::query_device();
 
         if self.notifier.is_none() {
             debug!("Notifier not initialized, attempting to initialize..");
@@ -127,7 +127,7 @@ impl AppState {
                 }
 
                 self.tray_icon
-                    .set_tooltip(Some(lang::t(no_headset_found)))?;
+                    .set_tooltip(Some(lang::t(no_mouse_found)))?;
                 match Self::load_icon(self.settings, system_theme(), 0, BatteryStatus::Unavailable)
                 {
                     Ok(icon) => self.tray_icon.set_icon(Some(icon))?,
@@ -240,7 +240,7 @@ impl ApplicationHandler<()> for AppState {
 
                         if let Some(notifier) = &mut self.notifier {
                             if let Err(err) =
-                                notifier.show_notification("Headset Battery Indicator", msg)
+                                notifier.show_notification("Mouse Battery Indicator", msg)
                             {
                                 error!("Failed to show notification: {:?}", err);
                             }

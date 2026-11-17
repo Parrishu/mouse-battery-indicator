@@ -1,25 +1,25 @@
 [package]
-name = "headset-battery-indicator"
+name = "mouse-battery-indicator"
 version = "3.7.0"
 edition = "2024"
 authors = ["Aaro Luomanen"]
-description = "Displays a battery icon in the Windows system tray for wireless headsets."
+description = "Displays a battery icon in the Windows system tray for the Logitech G Pro X Superlight 2 mouse."
 license = "MIT"
-homepage = "https://github.com/aarol/headset-battery-indicator"
-default-run = "headset-battery-indicator-debug"
+homepage = "https://github.com/Parrishu/mouse-battery-indicator"
+default-run = "mouse-battery-indicator-debug"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [[bin]]
-name = "headset-battery-indicator-debug"
+name = "mouse-battery-indicator-debug"
 path = "src/bin/debug.rs"
 
 [[bin]]
-name = "headset-battery-indicator"
+name = "mouse-battery-indicator"
 path = "src/main.rs"
 
 [[bin]]
-name = "headset-battery-indicator-portable"
+name = "mouse-battery-indicator-portable"
 path = "src/main.rs"
 required-features = ["portable"]
 
@@ -55,8 +55,6 @@ toml = { version = "1.1.6", features = ["parse", "std", "serde", "display"], def
 
 [build-dependencies]
 winres = "0.1"
-cmake = "0.1.58"
-vcpkg = "0.2"
 cc = { version = "1.2.61", features = ["jobserver"] }
 
 [profile.release]

@@ -1,7 +1,7 @@
 use anyhow::Context;
 use winit::window::Theme;
 
-use crate::headset_control::BatteryStatus;
+use crate::mouse_control::BatteryStatus;
 
 pub fn generate_number_icon(
     theme: Theme,

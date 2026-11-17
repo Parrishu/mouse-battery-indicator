@@ -92,7 +92,7 @@ impl ContextMenu {
                 .as_ref()
                 .is_some_and(|m| *m.id() == id) =>
             {
-                let url = "https://github.com/aarol/headset-battery-indicator/releases";
+                let url = "https://github.com/Parrishu/mouse-battery-indicator/releases";
                 {
                     if let Err(err) = Self::spawn_command_no_window("explorer", &[&url]) {
                         error!("Failed to open update URL {url}: {err:?}");
@@ -102,7 +102,7 @@ impl ContextMenu {
             id if id == self.menu_logs.id() => {
                 if let Ok(dir) = std::env::current_exe().map(|p| p.parent().unwrap().to_path_buf())
                 {
-                    let path = dir.join("headset-battery-indicator.log");
+                    let path = dir.join("mouse-battery-indicator.log");
                     {
                         if let Err(e) = Self::spawn_command_no_window("explorer", &[&path]) {
                             error!("Failed to open log file at {}: {e:?}", path.display());

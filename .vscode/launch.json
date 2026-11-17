@@ -7,14 +7,14 @@
     {
       "type": "lldb",
       "request": "launch",
-      "name": "Debug executable 'headset-battery-indicator'",
+      "name": "Debug executable 'mouse-battery-indicator'",
       "cargo": {
         "args": [
           "build",
-          "--bin=headset-battery-indicator-debug",
+          "--bin=mouse-battery-indicator-debug",
         ],
         "filter": {
-          "name": "headset-battery-indicator-debug",
+          "name": "mouse-battery-indicator-debug",
           "kind": "bin"
         }
       },
