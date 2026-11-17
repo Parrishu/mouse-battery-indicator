@@ -2,6 +2,7 @@ use crate::lang;
 use crate::lang::Key::*;
 
 use libc::{c_char, c_int, c_void};
+use std::ffi::{CStr, CString};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -70,7 +71,19 @@ const RECEIVER_PRODUCT_IDS: [u16; 2] = [0xc547, 0xc54d];
 const DIRECT_MOUSE_PRODUCT_IDS: [u16; 2] = [0xc09b, 0xc09d];
 static HIDAPI_INITIALIZED: OnceLock<bool> = OnceLock::new();
 
-pub fn query_device() -> Option<Device> {
+#[derive(Clone, Copy)]
+struct BatteryFeature {
+    feature_id: u16,
+    feature_index: u8,
+}
+
+pub struct CachedMouse {
+    path: CString,
+    device_index: u8,
+    battery_feature: BatteryFeature,
+}
+
+pub fn query_device(cache: &mut Option<CachedMouse>) -> Option<Device> {
     let initialized = *HIDAPI_INITIALIZED.get_or_init(|| unsafe {
         let initialized = hid_init() == 0;
         if !initialized {
@@ -83,6 +96,25 @@ pub fn query_device() -> Option<Device> {
     }
 
     unsafe {
+        if let Some(cached) = cache.as_ref() {
+            let mouse = hid_open_path(cached.path.as_ptr());
+            if !mouse.is_null() {
+                let battery = read_battery(
+                    mouse,
+                    cached.device_index,
+                    Some(cached.battery_feature),
+                );
+                hid_close(mouse);
+                if let Some((battery, _)) = battery {
+                    return Some(Device {
+                        product_name: "Logitech G PRO X SUPERLIGHT 2".to_string(),
+                        battery,
+                    });
+                }
+            }
+            *cache = None;
+        }
+
         let devices = hid_enumerate(LOGITECH_VENDOR_ID, 0);
         if devices.is_null() {
             return None;
@@ -97,19 +129,38 @@ pub fn query_device() -> Option<Device> {
 
             if info.vendor_id == LOGITECH_VENDOR_ID
                 && info.usage_page == HIDPP_USAGE_PAGE
-                && (is_direct_mouse || is_receiver)
                 && !info.path.is_null()
             {
+                log::trace!(
+                    "Probing Logitech HID++ interface (PID 0x{:04x}, usage 0x{:04x})",
+                    info.product_id,
+                    info.usage
+                );
                 let mouse = hid_open_path(info.path);
                 if !mouse.is_null() {
                     if is_direct_mouse {
-                        result = probe_device(mouse, HIDPP_DIRECT_INDEX, true);
+                        result = cache_probe(
+                            probe_device(mouse, HIDPP_DIRECT_INDEX, true),
+                            info.path,
+                            HIDPP_DIRECT_INDEX,
+                            cache,
+                        );
                     } else {
-                        for index in 1..=6 {
-                            result = probe_device(mouse, index, false);
-                            if result.is_some() {
-                                break;
-                            }
+                        if !is_receiver {
+                            result = cache_probe(
+                                probe_device(mouse, HIDPP_DIRECT_INDEX, false),
+                                info.path,
+                                HIDPP_DIRECT_INDEX,
+                                cache,
+                            );
+                        }
+                        if result.is_none() {
+                            result = probe_receiver_slots(mouse, info.path, cache);
+                        } else {
+                            log::debug!(
+                                "Found Superlight 2 on Logitech HID++ PID 0x{:04x}",
+                                info.product_id
+                            );
                         }
                     }
 
@@ -124,44 +175,128 @@ pub fn query_device() -> Option<Device> {
     }
 }
 
-unsafe fn probe_device(mouse: *mut c_void, device_index: u8, direct_mouse: bool) -> Option<Device> {
-    let battery = unsafe { read_battery(mouse, device_index)? };
-    let name = unsafe { read_firmware_name(mouse, device_index) };
-    if let Some(name) = name.as_deref() {
-        if !is_superlight_2(name) {
-            return None;
-        }
-    } else if !direct_mouse {
-        return None;
-    }
-
-    Some(Device {
-        product_name: "Logitech G PRO X SUPERLIGHT 2".to_string(),
-        battery,
+unsafe fn cache_probe(
+    probe: Option<(Device, BatteryFeature)>,
+    path: *const c_char,
+    device_index: u8,
+    cache: &mut Option<CachedMouse>,
+) -> Option<Device> {
+    probe.map(|(device, battery_feature)| {
+        *cache = Some(CachedMouse {
+            path: unsafe { CStr::from_ptr(path) }.to_owned(),
+            device_index,
+            battery_feature,
+        });
+        device
     })
 }
 
-fn read_battery(mouse: *mut c_void, device_index: u8) -> Option<HscBattery> {
+unsafe fn probe_receiver_slots(
+    mouse: *mut c_void,
+    path: *const c_char,
+    cache: &mut Option<CachedMouse>,
+) -> Option<Device> {
+    for device_index in 1..=6 {
+        if let Some((device, battery_feature)) =
+            unsafe { probe_device(mouse, device_index, false) }
+        {
+            *cache = Some(CachedMouse {
+                path: unsafe { CStr::from_ptr(path) }.to_owned(),
+                device_index,
+                battery_feature,
+            });
+            return Some(device);
+        }
+    }
+    None
+}
+
+unsafe fn probe_device(
+    mouse: *mut c_void,
+    device_index: u8,
+    direct_mouse: bool,
+) -> Option<(Device, BatteryFeature)> {
+    let (battery, battery_feature) = unsafe { read_battery(mouse, device_index, None)? };
+    let name = unsafe { read_firmware_name(mouse, device_index) };
+    if let Some(name) = name.as_deref() {
+        if !is_superlight_2(name) {
+            log::trace!("HID++ device index 0x{device_index:02x} is {name:?}, not the target mouse");
+            return None;
+        }
+    } else if !direct_mouse {
+        log::trace!("Could not read the firmware name for HID++ device index 0x{device_index:02x}");
+        return None;
+    }
+
+    Some((
+        Device {
+            product_name: "Logitech G PRO X SUPERLIGHT 2".to_string(),
+            battery,
+        },
+        battery_feature,
+    ))
+}
+
+fn read_battery(
+    mouse: *mut c_void,
+    device_index: u8,
+    cached_feature: Option<BatteryFeature>,
+) -> Option<(HscBattery, BatteryFeature)> {
     unsafe {
-        if let Some(feature) = feature_index(mouse, device_index, HIDPP_FEATURE_UNIFIED_BATTERY) {
+        if let Some(feature) = cached_feature
+            && let Some(battery) = battery_for_feature(mouse, device_index, feature)
+        {
+            return Some((battery, feature));
+        }
+
+        if let Some(feature_index) =
+            feature_index(mouse, device_index, HIDPP_FEATURE_UNIFIED_BATTERY)
+        {
+            let feature = BatteryFeature {
+                feature_id: HIDPP_FEATURE_UNIFIED_BATTERY,
+                feature_index,
+            };
             if let Some(capabilities) =
-                hidpp_request(mouse, device_index, feature, 0x00, 0, 0)
+                hidpp_request(mouse, device_index, feature_index, 0x00, 0, 0)
+                && capabilities[5] & 0x02 != 0
+                && let Some(battery) = battery_for_feature(mouse, device_index, feature)
             {
-                if capabilities[5] & 0x02 != 0 {
-                    if let Some(status) = hidpp_request(mouse, device_index, feature, 0x01, 0, 0)
-                        && let Some(battery) =
-                            battery_from_report(HIDPP_FEATURE_UNIFIED_BATTERY, &status)
-                    {
-                        return Some(battery);
-                    }
-                }
+                return Some((battery, feature));
             }
         }
 
-        let feature = feature_index(mouse, device_index, HIDPP_FEATURE_BATTERY_STATUS)?;
-        let status = hidpp_request(mouse, device_index, feature, 0x00, 0, 0)?;
-        battery_from_report(HIDPP_FEATURE_BATTERY_STATUS, &status)
+        let feature_index =
+            feature_index(mouse, device_index, HIDPP_FEATURE_BATTERY_STATUS)?;
+        let feature = BatteryFeature {
+            feature_id: HIDPP_FEATURE_BATTERY_STATUS,
+            feature_index,
+        };
+        let battery = battery_for_feature(mouse, device_index, feature)?;
+        Some((battery, feature))
     }
+}
+
+unsafe fn battery_for_feature(
+    mouse: *mut c_void,
+    device_index: u8,
+    feature: BatteryFeature,
+) -> Option<HscBattery> {
+    let function = if feature.feature_id == HIDPP_FEATURE_UNIFIED_BATTERY {
+        0x01
+    } else {
+        0x00
+    };
+    let status = unsafe {
+        hidpp_request(
+            mouse,
+            device_index,
+            feature.feature_index,
+            function,
+            0,
+            0,
+        )?
+    };
+    battery_from_report(feature.feature_id, &status)
 }
 
 unsafe fn feature_index(
@@ -234,7 +369,11 @@ unsafe fn hidpp_request(
     request[4] = param0;
     request[5] = param1;
 
-    if unsafe { hid_write(mouse, request.as_ptr(), request.len()) } != request.len() as c_int {
+    let written = unsafe { hid_write(mouse, request.as_ptr(), request.len()) };
+    if written != request.len() as c_int {
+        log::trace!(
+            "HID++ write failed for device index 0x{device_index:02x}, feature 0x{feature:02x}, function 0x{function:x} (wrote {written} bytes)"
+        );
         return None;
     }
 
@@ -242,6 +381,9 @@ unsafe fn hidpp_request(
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
+            log::trace!(
+                "HID++ response timed out for device index 0x{device_index:02x}, feature 0x{feature:02x}, function 0x{function:x}"
+            );
             return None;
         }
         let timeout_ms = remaining.as_millis().max(1).min(c_int::MAX as u128) as c_int;
@@ -255,6 +397,9 @@ unsafe fn hidpp_request(
             )
         };
         if bytes <= 0 {
+            log::trace!(
+                "HID++ response timed out for device index 0x{device_index:02x}, feature 0x{feature:02x}, function 0x{function:x}"
+            );
             return None;
         }
         if bytes as usize == response.len()
@@ -271,6 +416,9 @@ unsafe fn hidpp_request(
                 || (response[2] == 0x8f && response[3] == feature))
             && response[4] == request[3]
         {
+            log::trace!(
+                "HID++ error response for device index 0x{device_index:02x}, feature 0x{feature:02x}, function 0x{function:x}"
+            );
             return None;
         }
     }

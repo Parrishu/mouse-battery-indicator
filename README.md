@@ -50,11 +50,10 @@ Run `mouse-battery-indicator-debug.exe` for console logging, or open `mouse-batt
 Confirm that:
 
 1. The G Pro X Superlight 2 is powered on and connected through its Lightspeed receiver or compatible connection.
-2. Windows Device Manager reports the device with the Logitech vendor ID.
-3. Logitech G HUB is not conflicting with or exclusively locking the HID interface.
-4. The mouse exposes one of the supported Logitech HID product IDs.
+2. The Lightspeed receiver is connected directly to the computer and the mouse is paired with it.
+3. Run `mouse-battery-indicator-debug.exe` and check its console output for HID++ probe messages.
 
-If the mouse appears under a firmware-updated product ID or name, report the Windows Device Manager vendor ID and product ID in a GitHub issue.
+If the mouse is still not detected, include the debug log when reporting the issue.
 
 ### Battery values are coarse
 

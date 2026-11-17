@@ -9,10 +9,6 @@ mod version_check;
 #[cfg(windows)]
 use anyhow::Result;
 use lang::Key::*;
-#[cfg(windows)]
-use windows::Win32::System::Threading::{GetCurrentProcess, IDLE_PRIORITY_CLASS, PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE, ProcessPowerThrottling, SetPriorityClass, SetProcessInformation};
-#[cfg(windows)]
-use std::os::raw::c_void;
 use std::{
     sync::LazyLock,
     time::{Duration, Instant},
@@ -40,9 +36,9 @@ struct AppState {
     context_menu: menu::ContextMenu,
     settings: settings::Settings,
     notifier: Option<Notifier>,
-
-    last_update: Instant,
-    should_update_icon: bool,
+    device_update_receiver: Option<mpsc::Receiver<Option<mouse_control::Device>>>,
+    last_battery_level: isize,
+    last_battery_status: BatteryStatus,
     update_receiver: Option<mpsc::Receiver<bool>>,
 }
 
@@ -55,10 +51,6 @@ pub fn run() -> anyhow::Result<()> {
 
     if let Err(err) = enable_menu_dark_mode_support() {
         warn!("Failed to enable dark mode support: {:?}", err);
-    }
-
-    if let Err(err) = set_efficiency_mode(true) {
-        warn!("Failed to set efficiency mode: {:?}", err);
     }
 
     let event_loop = EventLoop::new().context("Error initializing event loop")?;
@@ -93,22 +85,33 @@ impl AppState {
 
         // Check for updates in the background (non-blocking)
         let update_receiver = version_check::check_for_updates_async(VERSION);
+        let (device_update_sender, device_update_receiver) = mpsc::sync_channel(1);
+        std::thread::Builder::new()
+            .name("mouse-battery-poller".to_string())
+            .spawn(move || {
+                let mut cached_mouse = None;
+                while device_update_sender
+                    .send(mouse_control::query_device(&mut cached_mouse))
+                    .is_ok()
+                {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            })
+            .context("starting mouse battery polling thread")?;
 
         Ok(Self {
             tray_icon,
             context_menu,
             settings,
             notifier,
-
-            last_update: Instant::now(),
-            should_update_icon: true,
+            device_update_receiver: Some(device_update_receiver),
+            last_battery_level: 0,
+            last_battery_status: BatteryStatus::Unavailable,
             update_receiver: Some(update_receiver),
         })
     }
 
-    fn update(&mut self, _event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
-        let result = mouse_control::query_device();
-
+    fn apply_device_update(&mut self, result: Option<mouse_control::Device>) -> anyhow::Result<()> {
         if self.notifier.is_none() {
             debug!("Notifier not initialized, attempting to initialize..");
             self.notifier = match Notifier::new() {
@@ -122,22 +125,20 @@ impl AppState {
 
         match result {
             None => {
+                self.last_battery_level = 0;
+                self.last_battery_status = BatteryStatus::Unavailable;
                 if let Some(notifier) = &mut self.notifier {
                     notifier.update(0, BatteryStatus::Unavailable, "");
                 }
 
                 self.tray_icon
                     .set_tooltip(Some(lang::t(no_mouse_found)))?;
-                match Self::load_icon(self.settings, system_theme(), 0, BatteryStatus::Unavailable)
-                {
-                    Ok(icon) => self.tray_icon.set_icon(Some(icon))?,
-                    Err(err) => error!("Failed to load icon: {err:?}"),
-                }
-                Ok(())
             }
             Some(device) => {
                 let battery_level = device.battery.level_percent as isize;
                 let battery_status = device.battery.status;
+                self.last_battery_level = battery_level;
+                self.last_battery_status = battery_status;
                 let product_name = device.product_name.to_string();
                 let tooltip_text = format!(
                     "{}{}",
@@ -156,18 +157,21 @@ impl AppState {
                 self.tray_icon
                     .set_tooltip(Some(&tooltip_text))
                     .with_context(|| format!("setting tooltip text: {tooltip_text}"))?;
-
-                match Self::load_icon(self.settings, system_theme(), battery_level, battery_status)
-                {
-                    Ok(icon) => self.tray_icon.set_icon(Some(icon))?,
-                    Err(err) => error!("Failed to load icon: {err:?}"),
-                }
-
-                self.should_update_icon = false;
-
-                Ok(())
             }
         }
+
+        self.refresh_icon()
+    }
+
+    fn refresh_icon(&mut self) -> anyhow::Result<()> {
+        let icon = Self::load_icon(
+            self.settings,
+            system_theme(),
+            self.last_battery_level,
+            self.last_battery_status,
+        )?;
+        self.tray_icon.set_icon(Some(icon))?;
+        Ok(())
     }
 
     fn load_icon(
@@ -217,13 +221,23 @@ impl ApplicationHandler<()> for AppState {
             }
         }
 
-        // This will be called at least every second
-        if self.last_update.elapsed() > Duration::from_millis(1000) {
-            if let Err(e) = self.update(event_loop) {
-                error!("Failed to update status: {e:?}");
-            };
-            self.last_update = Instant::now();
+        let device_update = self
+            .device_update_receiver
+            .as_ref()
+            .map(mpsc::Receiver::try_recv);
+        match device_update {
+            Some(Ok(result)) => {
+                if let Err(err) = self.apply_device_update(result) {
+                    error!("Failed to update status: {err:?}");
+                }
+            }
+            Some(Err(mpsc::TryRecvError::Disconnected)) => {
+                self.device_update_receiver = None;
+                error!("Mouse battery polling thread stopped");
+            }
+            Some(Err(mpsc::TryRecvError::Empty)) | None => {}
         }
+
         if let Ok(event) = MenuEvent::receiver().try_recv() {
             match event.id {
                 id if id == self.context_menu.menu_enable_notifications.id() => {
@@ -254,7 +268,9 @@ impl ApplicationHandler<()> for AppState {
                         .menu_show_text_icon
                         .set_checked(self.settings.use_number_icon);
 
-                    _ = self.update(event_loop);
+                    if let Err(err) = self.refresh_icon() {
+                        error!("Failed to refresh icon: {err:?}");
+                    }
 
                     if let Err(e) = self.settings.save() {
                         error!("Failed to save settings: {e:?}");
@@ -362,34 +378,4 @@ fn should_system_use_dark_mode() -> bool {
     SHOULD_SYSTEM_USE_DARK_MODE
         .map(|shoud_system_use_dark_mode| unsafe { (shoud_system_use_dark_mode)() })
         .unwrap_or(true)
-}
-
-#[cfg(windows)]
-pub fn set_efficiency_mode(enable: bool) -> windows::core::Result<()> {
-    unsafe {
-        let process = GetCurrentProcess();
-
-        // EcoQoS: ControlMask says "I'm taking control of this flag",
-        // StateMask says whether it's on (flag set) or off (0).
-        let state = PROCESS_POWER_THROTTLING_STATE {
-            Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-            ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-            StateMask: if enable { PROCESS_POWER_THROTTLING_EXECUTION_SPEED } else { 0 },
-        };
-
-        SetProcessInformation(
-            process,
-            ProcessPowerThrottling,
-            &state as *const _ as *const c_void,
-            size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
-        )?;
-
-        // Task Manager's Efficiency mode also drops the priority class.
-        use windows::Win32::System::Threading::NORMAL_PRIORITY_CLASS;
-        SetPriorityClass(
-            process,
-            if enable { IDLE_PRIORITY_CLASS } else { NORMAL_PRIORITY_CLASS },
-        )?;
-    }
-    Ok(())
 }
