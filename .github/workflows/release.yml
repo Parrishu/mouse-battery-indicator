@@ -34,17 +34,34 @@ jobs:
           CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
         shell: pwsh
         run: |
-          # Decode and save certificate
-          [Convert]::FromBase64String($env:CERTIFICATE_PFX_BASE64) | Set-Content -Path certificate_from_secret.pfx -AsByteStream
+          if ([string]::IsNullOrWhiteSpace($env:CERTIFICATE_PFX_BASE64) -or
+              [string]::IsNullOrWhiteSpace($env:CERTIFICATE_PASSWORD)) {
+            Write-Warning "Signing certificate secrets are not configured; publishing unsigned executables."
+            exit 0
+          }
 
-          # Sign the executable
-          $SignTool = Get-ChildItem -Path "C:\\Program Files*\\Windows Kits\\*\\bin\\*\\x64\\signtool.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-          $SignToolPath = $SignTool.FullName
-          & $SignToolPath sign /f certificate_from_secret.pfx /p $env:CERTIFICATE_PASSWORD /tr http://timestamp.digicert.com /td sha256 /fd sha256 "Output/MouseBatteryIndicatorSetup.exe"
-          & $SignToolPath sign /f certificate_from_secret.pfx /p $env:CERTIFICATE_PASSWORD /tr http://timestamp.digicert.com /td sha256 /fd sha256 "Output/MouseBatteryIndicatorPortable.exe"
+          $certificatePath = Join-Path $PWD "certificate_from_secret.pfx"
+          try {
+            $certificateBytes = [Convert]::FromBase64String($env:CERTIFICATE_PFX_BASE64)
+            [IO.File]::WriteAllBytes($certificatePath, $certificateBytes)
 
-          # Clean up certificate
-          Remove-Item certificate_from_secret.pfx
+            $signTool = Get-ChildItem -Path "C:\Program Files*\Windows Kits\*\bin\*\x64\signtool.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $signTool) {
+              throw "Windows SDK SignTool was not found."
+            }
+
+            foreach ($file in @("Output/MouseBatteryIndicatorSetup.exe", "Output/MouseBatteryIndicatorPortable.exe")) {
+              & $signTool.FullName sign /f $certificatePath /p $env:CERTIFICATE_PASSWORD /tr http://timestamp.digicert.com /td sha256 /fd sha256 $file
+              if ($LASTEXITCODE -ne 0) {
+                throw "SignTool failed to sign $file (exit code $LASTEXITCODE)."
+              }
+            }
+          }
+          finally {
+            if (Test-Path $certificatePath) {
+              Remove-Item $certificatePath -Force
+            }
+          }
 
       - name: Attest Build Provenance
         uses: actions/attest@v4
