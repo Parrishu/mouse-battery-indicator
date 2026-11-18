@@ -30,7 +30,7 @@ use winit::{
 
 use crate::{mouse_control::BatteryStatus, notify::Notifier, settings::Settings};
 
-const DEVICE_POLL_INTERVAL: Duration = Duration::from_secs(60);
+const DEVICE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 pub(crate) enum AppEvent {
     DeviceUpdate(Option<mouse_control::Device>),

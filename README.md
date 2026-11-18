@@ -9,6 +9,7 @@
 
 - Supports many Logitech HID++ mice connected by receiver or USB
 - Shows battery level, charging status, and optional battery notifications
+- Checks battery and charging status every second
 - Switches between a battery icon and percentage display
 - Includes installer and portable versions
 
