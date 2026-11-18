@@ -68,7 +68,7 @@ const HIDPP_FEATURE_BATTERY_STATUS: u16 = 0x1000;
 const HIDPP_FEATURE_UNIFIED_BATTERY: u16 = 0x1004;
 const HIDPP_REPLY_TIMEOUT: Duration = Duration::from_millis(500);
 const RECEIVER_PRODUCT_IDS: [u16; 2] = [0xc547, 0xc54d];
-const DIRECT_MOUSE_PRODUCT_IDS: [u16; 2] = [0xc09b, 0xc09d];
+const DIRECT_MOUSE_PRODUCT_IDS: [u16; 3] = [0x40a9, 0xc09b, 0xc09d];
 static HIDAPI_INITIALIZED: OnceLock<bool> = OnceLock::new();
 
 #[derive(Clone, Copy)]
@@ -124,7 +124,7 @@ pub fn query_device(cache: &mut Option<CachedMouse>) -> Option<Device> {
         let mut result = None;
         while !device_info.is_null() && result.is_none() {
             let info = &*device_info;
-            let is_direct_mouse = DIRECT_MOUSE_PRODUCT_IDS.contains(&info.product_id);
+            let is_direct_mouse = is_direct_mouse_product(info.product_id);
             let is_receiver = RECEIVER_PRODUCT_IDS.contains(&info.product_id);
 
             if info.vendor_id == LOGITECH_VENDOR_ID
@@ -471,6 +471,10 @@ fn is_superlight_2(name: &str) -> bool {
     )
 }
 
+fn is_direct_mouse_product(product_id: u16) -> bool {
+    DIRECT_MOUSE_PRODUCT_IDS.contains(&product_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,6 +503,12 @@ mod tests {
         assert!(is_superlight_2("PRO X SUPERLIGHT 2"));
         assert!(!is_superlight_2("PRO X SUPERLIGHT"));
         assert!(!is_superlight_2("PRO X SUPERLIGHT 2 DEX"));
+    }
+
+    #[test]
+    fn wired_superlight_two_product_id_is_recognized() {
+        assert!(is_direct_mouse_product(0x40a9));
+        assert!(!is_direct_mouse_product(0x40aa));
     }
 }
 
