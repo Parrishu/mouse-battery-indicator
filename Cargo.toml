@@ -1,6 +1,6 @@
 [package]
 name = "mouse-battery-indicator"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2024"
 authors = ["Parrishu"]
 description = "Displays Logitech HID++ battery levels in the Windows system tray."

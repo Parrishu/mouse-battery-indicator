@@ -31,6 +31,13 @@ use winit::{
 use crate::{mouse_control::BatteryStatus, notify::Notifier, settings::Settings};
 
 const DEVICE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const BATTERY_LEVEL_UPDATE_INTERVAL: Duration = Duration::from_secs(60);
+
+fn battery_level_update_due(last_updated: Option<Instant>, now: Instant) -> bool {
+    last_updated.map_or(true, |last_updated| {
+        now.saturating_duration_since(last_updated) >= BATTERY_LEVEL_UPDATE_INTERVAL
+    })
+}
 
 pub(crate) enum AppEvent {
     DeviceUpdate(Option<mouse_control::Device>),
@@ -44,6 +51,7 @@ struct AppState {
     notifier: Option<Notifier>,
     last_battery_level: isize,
     last_battery_status: BatteryStatus,
+    last_battery_level_update: Option<Instant>,
     last_product_name: Option<String>,
     has_applied_device_update: bool,
     last_theme: Theme,
@@ -120,26 +128,17 @@ impl AppState {
             notifier,
             last_battery_level: 0,
             last_battery_status: BatteryStatus::Unavailable,
+            last_battery_level_update: None,
             last_product_name: None,
             has_applied_device_update: false,
             last_theme: theme,
         })
     }
 
-    fn apply_device_update(&mut self, result: Option<mouse_control::Device>) -> anyhow::Result<()> {
-        let changed = !self.has_applied_device_update
-            || match &result {
-                None => {
-                    self.last_battery_level != 0
-                        || self.last_battery_status != BatteryStatus::Unavailable
-                        || self.last_product_name.is_some()
-                }
-                Some(device) => {
-                    self.last_battery_level != device.battery.level_percent as isize
-                        || self.last_battery_status != device.battery.status
-                        || self.last_product_name.as_deref() != Some(device.product_name.as_str())
-                }
-            };
+    fn apply_device_update(
+        &mut self,
+        mut result: Option<mouse_control::Device>,
+    ) -> anyhow::Result<()> {
         if self.notifier.is_none() {
             debug!("Notifier not initialized, attempting to initialize..");
             self.notifier = match Notifier::new() {
@@ -150,6 +149,31 @@ impl AppState {
                 }
             };
         }
+        if let Some(device) = &result
+            && let Some(notifier) = &mut self.notifier
+        {
+            notifier.update(
+                device.battery.level_percent as isize,
+                device.battery.status,
+                &device.product_name,
+            );
+        }
+
+        let level_update_due =
+            battery_level_update_due(self.last_battery_level_update, Instant::now());
+        let changed = !self.has_applied_device_update
+            || match &result {
+                None => {
+                    self.last_battery_level != 0
+                        || self.last_battery_status != BatteryStatus::Unavailable
+                        || self.last_product_name.is_some()
+                }
+                Some(device) => {
+                    level_update_due
+                        || self.last_battery_status != device.battery.status
+                        || self.last_product_name.as_deref() != Some(device.product_name.as_str())
+                }
+            };
         if !changed {
             return Ok(());
         }
@@ -159,6 +183,7 @@ impl AppState {
             None => {
                 self.last_battery_level = 0;
                 self.last_battery_status = BatteryStatus::Unavailable;
+                self.last_battery_level_update = None;
                 self.last_product_name = None;
                 if let Some(notifier) = &mut self.notifier {
                     notifier.update(0, BatteryStatus::Unavailable, "");
@@ -166,9 +191,15 @@ impl AppState {
 
                 self.tray_icon.set_tooltip(Some(lang::t(no_mouse_found)))?;
             }
-            Some(device) => {
-                let battery_level = device.battery.level_percent as isize;
+            Some(mut device) => {
+                let battery_level = if level_update_due {
+                    self.last_battery_level_update = Some(Instant::now());
+                    device.battery.level_percent as isize
+                } else {
+                    self.last_battery_level
+                };
                 let battery_status = device.battery.status;
+                device.battery.level_percent = battery_level as _;
                 self.last_battery_level = battery_level;
                 self.last_battery_status = battery_status;
                 self.last_product_name = Some(device.product_name.clone());
@@ -181,10 +212,6 @@ impl AppState {
                         ""
                     }
                 );
-
-                if let Some(notifier) = &mut self.notifier {
-                    notifier.update(battery_level, battery_status, &device.product_name);
-                }
 
                 self.tray_icon
                     .set_tooltip(Some(&tooltip_text))
@@ -405,4 +432,24 @@ fn should_system_use_dark_mode() -> bool {
     SHOULD_SYSTEM_USE_DARK_MODE
         .map(|shoud_system_use_dark_mode| unsafe { (shoud_system_use_dark_mode)() })
         .unwrap_or(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn battery_level_refresh_is_limited_to_once_per_minute() {
+        let last_updated = Instant::now();
+
+        assert!(battery_level_update_due(None, last_updated));
+        assert!(!battery_level_update_due(
+            Some(last_updated),
+            last_updated + Duration::from_secs(59)
+        ));
+        assert!(battery_level_update_due(
+            Some(last_updated),
+            last_updated + BATTERY_LEVEL_UPDATE_INTERVAL
+        ));
+    }
 }
