@@ -2,13 +2,13 @@
 
 #define MyAppExeName "mouse-battery-indicator.exe"
 #define MyAppDebugExeName "mouse-battery-indicator-debug.exe"
-#define MyAppDisplayName "G Pro X Superlight 2 Battery Indicator"
+#define MyAppDisplayName "Logitech Mouse Battery Indicator"
 
 [Setup]
 AppId=88ECD258-57B9-4DDB-ABA3-67DC0289A92C
 AppName={#MyAppDisplayName}
 ; keep this up to date
-AppVersion=4.0.0
+AppVersion=4.1.0
 WizardStyle=modern
 DefaultDirName={localappdata}\Programs\MouseBatteryIndicator
 DefaultGroupName={#MyAppDisplayName}
@@ -34,8 +34,8 @@ Source: "target/release/mouse-battery-indicator.exe"; DestDir: "{app}"; Flags:
 Source: "target/release/mouse-battery-indicator-debug.exe"; DestDir: "{app}"; Flags:
 
 [Icons]
-Name: "{userstartup}\G Pro X Superlight 2 Battery Indicator"; Filename: "{app}\mouse-battery-indicator.exe";
-Name: "{autoprograms}\G Pro X Superlight 2 Battery Indicator"; Filename: "{app}\mouse-battery-indicator.exe";
+Name: "{userstartup}\Logitech Mouse Battery Indicator"; Filename: "{app}\mouse-battery-indicator.exe";
+Name: "{autoprograms}\Logitech Mouse Battery Indicator"; Filename: "{app}\mouse-battery-indicator.exe";
 
 [Run]
 Filename: "{app}\mouse-battery-indicator.exe"; WorkingDir: "{app}"; Description: "Launch application (it will show up inside the task bar ^-arrow menu)"; Flags: postinstall nowait

@@ -1,13 +1,15 @@
 # Mouse Battery Indicator
 
-Adds a battery icon to the Windows system tray for the Logitech G Pro X Superlight 2 mouse.
+Shows a battery icon for a compatible Logitech mouse in the Windows system tray.
 
 ![Screenshot of indicator on Windows task bar](docs/icon-screenshot.png)
 
 ## Features
 
 * Supports Windows 10 and newer
-* Monitors only the Logitech G Pro X Superlight 2
+* Supports Logitech HID++ devices that expose battery information, including many LIGHTSPEED, Unifying, and Bolt mice
+* Works with a compatible mouse connected by its receiver or USB cable
+* Detects the device's firmware-reported name instead of requiring a specific mouse model
 * Built with Rust and uses very little memory
 * Shows a charging indicator
 
@@ -26,7 +28,7 @@ Adds a battery icon to the Windows system tray for the Logitech G Pro X Superlig
   UseNumberIcon = false
   ```
 
-Mouse Battery Indicator uses HIDAPI for direct HID communication with the Logitech G Pro X Superlight 2.
+Mouse Battery Indicator uses HIDAPI and Logitech's HID++ protocol. It reads Unified Battery (`0x1004`), Battery Status (`0x1000`), Battery Voltage (`0x1001`), and ADC Measurement (`0x1F20`) when exposed by the device. Only one battery-capable Logitech device is shown at a time; the first detected device is used.
 
 ## Installation
 
@@ -49,9 +51,10 @@ Run `mouse-battery-indicator-debug.exe` for console logging, or open `mouse-batt
 
 Confirm that:
 
-1. The G Pro X Superlight 2 is powered on and connected through its Lightspeed receiver or compatible connection.
-2. The Lightspeed receiver is connected directly to the computer and the mouse is paired with it.
-3. Run `mouse-battery-indicator-debug.exe` and check its console output for HID++ probe messages.
+1. The mouse is powered on, awake, and paired with its Logitech receiver, or connected by USB.
+2. The receiver is connected directly to the computer.
+3. The mouse exposes one of the HID++ battery features listed above; support varies by model and firmware.
+4. Run `mouse-battery-indicator-debug.exe` and check its console output for HID++ probe messages.
 
 If the mouse is still not detected, include the debug log when reporting the issue.
 

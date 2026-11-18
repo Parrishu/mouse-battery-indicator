@@ -61,14 +61,14 @@ const LOGITECH_VENDOR_ID: u16 = 0x046d;
 const HIDPP_USAGE_PAGE: u16 = 0xff00;
 const HIDPP_LONG_REPORT: u8 = 0x11;
 const HIDPP_LONG_REPORT_LEN: usize = 20;
-const HIDPP_SW_ID: u8 = 0x01;
+const HIDPP_SW_ID: u8 = 0x0b;
 const HIDPP_DIRECT_INDEX: u8 = 0xff;
 const HIDPP_FEATURE_DEVICE_NAME: u16 = 0x0005;
 const HIDPP_FEATURE_BATTERY_STATUS: u16 = 0x1000;
+const HIDPP_FEATURE_BATTERY_VOLTAGE: u16 = 0x1001;
 const HIDPP_FEATURE_UNIFIED_BATTERY: u16 = 0x1004;
-const HIDPP_REPLY_TIMEOUT: Duration = Duration::from_millis(500);
-const RECEIVER_PRODUCT_IDS: [u16; 2] = [0xc547, 0xc54d];
-const DIRECT_MOUSE_PRODUCT_IDS: [u16; 3] = [0x40a9, 0xc09b, 0xc09d];
+const HIDPP_FEATURE_ADC_MEASUREMENT: u16 = 0x1f20;
+const HIDPP_REPLY_TIMEOUT: Duration = Duration::from_millis(1500);
 static HIDAPI_INITIALIZED: OnceLock<bool> = OnceLock::new();
 
 #[derive(Clone, Copy)]
@@ -77,10 +77,19 @@ struct BatteryFeature {
     feature_index: u8,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HidppError {
+    DeviceUnavailable,
+    Rejected,
+    Timeout,
+    Transport,
+}
+
 pub struct CachedMouse {
     path: CString,
     device_index: u8,
     battery_feature: BatteryFeature,
+    product_name: String,
 }
 
 pub fn query_device(cache: &mut Option<CachedMouse>) -> Option<Device> {
@@ -107,7 +116,7 @@ pub fn query_device(cache: &mut Option<CachedMouse>) -> Option<Device> {
                 hid_close(mouse);
                 if let Some((battery, _)) = battery {
                     return Some(Device {
-                        product_name: "Logitech G PRO X SUPERLIGHT 2".to_string(),
+                        product_name: cached.product_name.clone(),
                         battery,
                     });
                 }
@@ -124,8 +133,7 @@ pub fn query_device(cache: &mut Option<CachedMouse>) -> Option<Device> {
         let mut result = None;
         while !device_info.is_null() && result.is_none() {
             let info = &*device_info;
-            let is_direct_mouse = is_direct_mouse_product(info.product_id);
-            let is_receiver = RECEIVER_PRODUCT_IDS.contains(&info.product_id);
+            let is_receiver = is_receiver_product(info.product_id);
 
             if info.vendor_id == LOGITECH_VENDOR_ID
                 && info.usage_page == HIDPP_USAGE_PAGE
@@ -138,32 +146,23 @@ pub fn query_device(cache: &mut Option<CachedMouse>) -> Option<Device> {
                 );
                 let mouse = hid_open_path(info.path);
                 if !mouse.is_null() {
-                    if is_direct_mouse {
+                    if is_receiver {
+                        result = probe_receiver_slots(mouse, info.path, cache);
+                    } else {
                         result = cache_probe(
-                            probe_device(mouse, HIDPP_DIRECT_INDEX, true),
+                            probe_device(mouse, HIDPP_DIRECT_INDEX),
                             info.path,
                             HIDPP_DIRECT_INDEX,
                             cache,
                         );
-                    } else {
-                        if !is_receiver {
-                            result = cache_probe(
-                                probe_device(mouse, HIDPP_DIRECT_INDEX, false),
-                                info.path,
-                                HIDPP_DIRECT_INDEX,
-                                cache,
-                            );
-                        }
-                        if result.is_none() {
-                            result = probe_receiver_slots(mouse, info.path, cache);
-                        } else {
-                            log::debug!(
-                                "Found Superlight 2 on Logitech HID++ PID 0x{:04x}",
-                                info.product_id
-                            );
-                        }
                     }
 
+                    if result.is_some() {
+                        log::debug!(
+                            "Found Logitech HID++ battery device on PID 0x{:04x}",
+                            info.product_id
+                        );
+                    }
                     hid_close(mouse);
                 }
             }
@@ -186,6 +185,7 @@ unsafe fn cache_probe(
             path: unsafe { CStr::from_ptr(path) }.to_owned(),
             device_index,
             battery_feature,
+            product_name: device.product_name.clone(),
         });
         device
     })
@@ -197,15 +197,8 @@ unsafe fn probe_receiver_slots(
     cache: &mut Option<CachedMouse>,
 ) -> Option<Device> {
     for device_index in 1..=6 {
-        if let Some((device, battery_feature)) =
-            unsafe { probe_device(mouse, device_index, false) }
-        {
-            *cache = Some(CachedMouse {
-                path: unsafe { CStr::from_ptr(path) }.to_owned(),
-                device_index,
-                battery_feature,
-            });
-            return Some(device);
+        if let Some(probe) = unsafe { probe_device(mouse, device_index) } {
+            return unsafe { cache_probe(Some(probe), path, device_index, cache) };
         }
     }
     None
@@ -214,23 +207,14 @@ unsafe fn probe_receiver_slots(
 unsafe fn probe_device(
     mouse: *mut c_void,
     device_index: u8,
-    direct_mouse: bool,
 ) -> Option<(Device, BatteryFeature)> {
     let (battery, battery_feature) = unsafe { read_battery(mouse, device_index, None)? };
-    let name = unsafe { read_firmware_name(mouse, device_index) };
-    if let Some(name) = name.as_deref() {
-        if !is_superlight_2(name) {
-            log::trace!("HID++ device index 0x{device_index:02x} is {name:?}, not the target mouse");
-            return None;
-        }
-    } else if !direct_mouse {
-        log::trace!("Could not read the firmware name for HID++ device index 0x{device_index:02x}");
-        return None;
-    }
+    let product_name =
+        product_name_or_fallback(unsafe { read_firmware_name(mouse, device_index) });
 
     Some((
         Device {
-            product_name: "Logitech G PRO X SUPERLIGHT 2".to_string(),
+            product_name,
             battery,
         },
         battery_feature,
@@ -249,30 +233,37 @@ fn read_battery(
             return Some((battery, feature));
         }
 
-        if let Some(feature_index) =
-            feature_index(mouse, device_index, HIDPP_FEATURE_UNIFIED_BATTERY)
-        {
+        for feature_id in [
+            HIDPP_FEATURE_UNIFIED_BATTERY,
+            HIDPP_FEATURE_BATTERY_STATUS,
+            HIDPP_FEATURE_BATTERY_VOLTAGE,
+            HIDPP_FEATURE_ADC_MEASUREMENT,
+        ] {
+            let feature_index = match feature_index(mouse, device_index, feature_id) {
+                Ok(Some(feature_index)) => feature_index,
+                Ok(None) | Err(HidppError::Rejected) => continue,
+                Err(
+                    HidppError::DeviceUnavailable | HidppError::Timeout | HidppError::Transport,
+                ) => return None,
+            };
             let feature = BatteryFeature {
-                feature_id: HIDPP_FEATURE_UNIFIED_BATTERY,
+                feature_id,
                 feature_index,
             };
-            if let Some(capabilities) =
-                hidpp_request(mouse, device_index, feature_index, 0x00, 0, 0)
-                && capabilities[5] & 0x02 != 0
-                && let Some(battery) = battery_for_feature(mouse, device_index, feature)
+
+            if feature_id == HIDPP_FEATURE_UNIFIED_BATTERY
+                && let Ok(capabilities) =
+                    hidpp_request(mouse, device_index, feature_index, 0x00, 0, 0)
+                && capabilities[5] & 0x02 == 0
             {
+                continue;
+            }
+
+            if let Some(battery) = battery_for_feature(mouse, device_index, feature) {
                 return Some((battery, feature));
             }
         }
-
-        let feature_index =
-            feature_index(mouse, device_index, HIDPP_FEATURE_BATTERY_STATUS)?;
-        let feature = BatteryFeature {
-            feature_id: HIDPP_FEATURE_BATTERY_STATUS,
-            feature_index,
-        };
-        let battery = battery_for_feature(mouse, device_index, feature)?;
-        Some((battery, feature))
+        None
     }
 }
 
@@ -294,7 +285,8 @@ unsafe fn battery_for_feature(
             function,
             0,
             0,
-        )?
+        )
+        .ok()?
     };
     battery_from_report(feature.feature_id, &status)
 }
@@ -303,7 +295,7 @@ unsafe fn feature_index(
     mouse: *mut c_void,
     device_index: u8,
     feature_id: u16,
-) -> Option<u8> {
+) -> Result<Option<u8>, HidppError> {
     let response = unsafe {
         hidpp_request(
             mouse,
@@ -314,12 +306,13 @@ unsafe fn feature_index(
             feature_id as u8,
         )?
     };
-    (response[4] != 0xff).then_some(response[4])
+    Ok((response[4] != 0xff).then_some(response[4]))
 }
 
 unsafe fn read_firmware_name(mouse: *mut c_void, device_index: u8) -> Option<String> {
-    let feature = unsafe { feature_index(mouse, device_index, HIDPP_FEATURE_DEVICE_NAME)? };
-    let count = unsafe { hidpp_request(mouse, device_index, feature, 0x00, 0, 0)? };
+    let feature = unsafe { feature_index(mouse, device_index, HIDPP_FEATURE_DEVICE_NAME) }
+        .ok()??;
+    let count = unsafe { hidpp_request(mouse, device_index, feature, 0x00, 0, 0) }.ok()?;
     let length = usize::from(count[4]);
     if length == 0 || length > 64 {
         return None;
@@ -335,7 +328,8 @@ unsafe fn read_firmware_name(mouse: *mut c_void, device_index: u8) -> Option<Str
                 0x01,
                 name.len() as u8,
                 0,
-            )?
+            )
+            .ok()?
         };
         let remaining = length - name.len();
         let previous_len = name.len();
@@ -360,7 +354,7 @@ unsafe fn hidpp_request(
     function: u8,
     param0: u8,
     param1: u8,
-) -> Option<[u8; HIDPP_LONG_REPORT_LEN]> {
+) -> Result<[u8; HIDPP_LONG_REPORT_LEN], HidppError> {
     let mut request = [0u8; HIDPP_LONG_REPORT_LEN];
     request[0] = HIDPP_LONG_REPORT;
     request[1] = device_index;
@@ -374,7 +368,7 @@ unsafe fn hidpp_request(
         log::trace!(
             "HID++ write failed for device index 0x{device_index:02x}, feature 0x{feature:02x}, function 0x{function:x} (wrote {written} bytes)"
         );
-        return None;
+        return Err(HidppError::Transport);
     }
 
     let deadline = Instant::now() + HIDPP_REPLY_TIMEOUT;
@@ -384,7 +378,7 @@ unsafe fn hidpp_request(
             log::trace!(
                 "HID++ response timed out for device index 0x{device_index:02x}, feature 0x{feature:02x}, function 0x{function:x}"
             );
-            return None;
+            return Err(HidppError::Timeout);
         }
         let timeout_ms = remaining.as_millis().max(1).min(c_int::MAX as u128) as c_int;
         let mut response = [0u8; HIDPP_LONG_REPORT_LEN];
@@ -400,7 +394,7 @@ unsafe fn hidpp_request(
             log::trace!(
                 "HID++ response timed out for device index 0x{device_index:02x}, feature 0x{feature:02x}, function 0x{function:x}"
             );
-            return None;
+            return Err(HidppError::Timeout);
         }
         if bytes as usize == response.len()
             && response[0] == HIDPP_LONG_REPORT
@@ -408,7 +402,7 @@ unsafe fn hidpp_request(
             && response[2] == feature
             && response[3] == ((function << 4) | HIDPP_SW_ID)
         {
-            return Some(response);
+            return Ok(response);
         }
         if bytes >= 7
             && response[1] == device_index
@@ -419,60 +413,121 @@ unsafe fn hidpp_request(
             log::trace!(
                 "HID++ error response for device index 0x{device_index:02x}, feature 0x{feature:02x}, function 0x{function:x}"
             );
-            return None;
+            return Err(if response[2] == 0x8f {
+                HidppError::DeviceUnavailable
+            } else {
+                HidppError::Rejected
+            });
         }
     }
 }
 
 fn battery_from_report(feature_id: u16, report: &[u8; HIDPP_LONG_REPORT_LEN]) -> Option<HscBattery> {
-    let level = report[4];
-    if level > 100 {
-        return None;
-    }
-
-    let charging = if feature_id == HIDPP_FEATURE_UNIFIED_BATTERY {
-        matches!(report[6], 1 | 2)
-    } else {
-        matches!(report[6], 1 | 2 | 4)
-    };
-    let valid_status = if feature_id == HIDPP_FEATURE_UNIFIED_BATTERY {
-        matches!(report[6], 0..=3)
-    } else {
-        matches!(report[6], 0..=4)
+    let voltage_mv;
+    let mut level;
+    let status = match feature_id {
+        HIDPP_FEATURE_UNIFIED_BATTERY | HIDPP_FEATURE_BATTERY_STATUS => {
+            level = c_int::from(report[4]);
+            if level > 100 {
+                return None;
+            }
+            voltage_mv = -1;
+            if feature_id == HIDPP_FEATURE_BATTERY_STATUS
+                && report[6] == 3
+                && level == 0
+            {
+                level = 100;
+            }
+            match (feature_id, report[6]) {
+                (HIDPP_FEATURE_UNIFIED_BATTERY, 1 | 2)
+                | (HIDPP_FEATURE_BATTERY_STATUS, 1 | 2 | 4) => BatteryStatus::Charging,
+                (HIDPP_FEATURE_UNIFIED_BATTERY, 0 | 3)
+                | (HIDPP_FEATURE_BATTERY_STATUS, 0 | 3) => BatteryStatus::Available,
+                _ => BatteryStatus::Unavailable,
+            }
+        }
+        HIDPP_FEATURE_BATTERY_VOLTAGE | HIDPP_FEATURE_ADC_MEASUREMENT => {
+            voltage_mv = (c_int::from(report[4]) << 8) | c_int::from(report[5]);
+            if !(1000..=5000).contains(&voltage_mv) {
+                return None;
+            }
+            level = percentage_from_voltage(voltage_mv);
+            let status = if feature_id == HIDPP_FEATURE_BATTERY_VOLTAGE {
+                if report[6] & 0x80 == 0 {
+                    BatteryStatus::Available
+                } else {
+                    match report[6] & 0x07 {
+                        0 => BatteryStatus::Charging,
+                        1 => BatteryStatus::Available,
+                        7 => BatteryStatus::Unavailable,
+                        _ => BatteryStatus::Available,
+                    }
+                }
+            } else {
+                match report[6] & 0x0e {
+                    0x02 => BatteryStatus::Charging,
+                    0x04 => BatteryStatus::Available,
+                    0x08 => BatteryStatus::Unavailable,
+                    _ => BatteryStatus::Available,
+                }
+            };
+            status
+        }
+        _ => return None,
     };
 
     Some(HscBattery {
-        level_percent: c_int::from(level),
-        status: if !valid_status {
-            BatteryStatus::Unavailable
-        } else if charging {
-            BatteryStatus::Charging
-        } else {
-            BatteryStatus::Available
-        },
-        voltage_mv: -1,
+        level_percent: level.clamp(0, 100),
+        status,
+        voltage_mv,
         time_to_full_min: -1,
         time_to_empty_min: -1,
     })
 }
 
-fn is_superlight_2(name: &str) -> bool {
-    let normalized: String = name
-        .chars()
-        .filter(|character| character.is_ascii_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect();
-    matches!(
-        normalized.as_str(),
-        "proxsuperlight2"
-            | "gproxsuperlight2"
-            | "logitechproxsuperlight2"
-            | "logitechgproxsuperlight2"
-    )
+fn product_name_or_fallback(name: Option<String>) -> String {
+    name.filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "Logitech HID++ device".to_string())
 }
 
-fn is_direct_mouse_product(product_id: u16) -> bool {
-    DIRECT_MOUSE_PRODUCT_IDS.contains(&product_id)
+fn percentage_from_voltage(voltage_mv: c_int) -> c_int {
+    const CURVE: [(c_int, c_int); 13] = [
+        (4186, 100),
+        (4067, 90),
+        (3989, 80),
+        (3922, 70),
+        (3859, 60),
+        (3811, 50),
+        (3778, 40),
+        (3751, 30),
+        (3717, 20),
+        (3671, 10),
+        (3646, 5),
+        (3579, 2),
+        (3500, 0),
+    ];
+
+    if voltage_mv >= CURVE[0].0 {
+        return 100;
+    }
+
+    for pair in CURVE.windows(2) {
+        let (upper_voltage, upper_percent) = pair[0];
+        let (lower_voltage, lower_percent) = pair[1];
+        if voltage_mv >= lower_voltage {
+            let voltage_delta = upper_voltage - lower_voltage;
+            let percent_delta = upper_percent - lower_percent;
+            return lower_percent
+                + ((voltage_mv - lower_voltage) * percent_delta + voltage_delta / 2)
+                    / voltage_delta;
+        }
+    }
+
+    0
+}
+
+fn is_receiver_product(product_id: u16) -> bool {
+    (0xc500..=0xc5ff).contains(&product_id)
 }
 
 #[cfg(test)]
@@ -499,16 +554,49 @@ mod tests {
     }
 
     #[test]
-    fn device_name_match_is_limited_to_superlight_two() {
-        assert!(is_superlight_2("PRO X SUPERLIGHT 2"));
-        assert!(!is_superlight_2("PRO X SUPERLIGHT"));
-        assert!(!is_superlight_2("PRO X SUPERLIGHT 2 DEX"));
+    fn battery_status_report_decodes_charge_state() {
+        let mut report = [0; HIDPP_LONG_REPORT_LEN];
+        report[4] = 45;
+        report[6] = 4;
+
+        let battery = battery_from_report(HIDPP_FEATURE_BATTERY_STATUS, &report).unwrap();
+        assert_eq!(battery.level_percent, 45);
+        assert_eq!(battery.status, BatteryStatus::Charging);
     }
 
     #[test]
-    fn wired_superlight_two_product_id_is_recognized() {
-        assert!(is_direct_mouse_product(0x40a9));
-        assert!(!is_direct_mouse_product(0x40aa));
+    fn voltage_battery_report_converts_millivolts_to_percentage() {
+        let mut report = [0; HIDPP_LONG_REPORT_LEN];
+        report[4] = 0x0f;
+        report[5] = 0x0e;
+
+        let battery = battery_from_report(HIDPP_FEATURE_BATTERY_VOLTAGE, &report).unwrap();
+        assert_eq!(battery.voltage_mv, 3854);
+        assert!((50..=60).contains(&battery.level_percent));
+    }
+
+    #[test]
+    fn receiver_product_family_is_not_limited_to_known_models() {
+        assert!(is_receiver_product(0xc547));
+        assert!(is_receiver_product(0xc548));
+        assert!(!is_receiver_product(0xc09b));
+    }
+
+    #[test]
+    fn any_hidpp_firmware_name_is_displayed() {
+        assert_eq!(
+            product_name_or_fallback(Some("G502 X".to_string())),
+            "G502 X"
+        );
+        assert_eq!(product_name_or_fallback(None), "Logitech HID++ device");
+    }
+
+    #[test]
+    fn voltage_curve_has_stable_endpoints_and_interpolates() {
+        assert_eq!(percentage_from_voltage(4200), 100);
+        assert_eq!(percentage_from_voltage(3500), 0);
+        assert_eq!(percentage_from_voltage(3420), 0);
+        assert_eq!(percentage_from_voltage(3811), 50);
     }
 }
 

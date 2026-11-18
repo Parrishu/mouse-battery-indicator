@@ -1,9 +1,9 @@
 [package]
 name = "mouse-battery-indicator"
-version = "4.0.0"
+version = "4.1.0"
 edition = "2024"
 authors = ["Aaro Luomanen"]
-description = "Displays a battery icon in the Windows system tray for the Logitech G Pro X Superlight 2 mouse."
+description = "Displays Logitech HID++ battery levels in the Windows system tray."
 license = "MIT"
 homepage = "https://github.com/Parrishu/mouse-battery-indicator"
 default-run = "mouse-battery-indicator-debug"
