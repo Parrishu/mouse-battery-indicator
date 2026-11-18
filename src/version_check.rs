@@ -1,27 +1,26 @@
 use log::{debug, info, warn};
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
+use winit::event_loop::EventLoopProxy;
 
 const GITHUB_API_URL: &str =
     "https://api.github.com/repos/Parrishu/mouse-battery-indicator/releases/latest";
 
 /// Spawns a background thread to check for new versions.
-/// Returns a receiver that will receive true if an update is available.
-/// This does not block the main thread.
-pub fn check_for_updates_async(current_version: &'static str) -> Receiver<bool> {
-    let (tx, rx): (Sender<bool>, Receiver<bool>) = mpsc::channel();
-
-    thread::spawn(move || match check_for_updates(current_version) {
-        Ok(update_available) => {
-            let _ = tx.send(update_available);
-        }
-        Err(e) => {
-            warn!("Failed to check for updates: {e}");
-            let _ = tx.send(false);
-        }
+/// Sends the result to the event loop without polling on the main thread.
+pub(super) fn check_for_updates_async(
+    current_version: &'static str,
+    event_proxy: EventLoopProxy<super::AppEvent>,
+) {
+    thread::spawn(move || {
+        let update_available = match check_for_updates(current_version) {
+            Ok(update_available) => update_available,
+            Err(e) => {
+                warn!("Failed to check for updates: {e}");
+                false
+            }
+        };
+        let _ = event_proxy.send_event(super::AppEvent::UpdateCheck(update_available));
     });
-
-    rx
 }
 
 #[derive(serde_derive::Deserialize)]

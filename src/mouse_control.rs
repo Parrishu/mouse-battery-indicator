@@ -3,6 +3,7 @@ use crate::lang::Key::*;
 
 use libc::{c_char, c_int, c_void};
 use std::ffi::{CStr, CString};
+use std::ptr::NonNull;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -85,6 +86,42 @@ enum HidppError {
     Transport,
 }
 
+struct HidDevice(NonNull<c_void>);
+
+impl HidDevice {
+    unsafe fn open_path(path: *const c_char) -> Option<Self> {
+        NonNull::new(unsafe { hid_open_path(path) }).map(Self)
+    }
+
+    fn as_ptr(&self) -> *mut c_void {
+        self.0.as_ptr()
+    }
+}
+
+impl Drop for HidDevice {
+    fn drop(&mut self) {
+        unsafe { hid_close(self.0.as_ptr()) };
+    }
+}
+
+struct HidEnumeration(NonNull<HidDeviceInfo>);
+
+impl HidEnumeration {
+    fn new(vendor_id: u16, product_id: u16) -> Option<Self> {
+        NonNull::new(unsafe { hid_enumerate(vendor_id, product_id) }).map(Self)
+    }
+
+    fn as_ptr(&self) -> *mut HidDeviceInfo {
+        self.0.as_ptr()
+    }
+}
+
+impl Drop for HidEnumeration {
+    fn drop(&mut self) {
+        unsafe { hid_free_enumeration(self.0.as_ptr()) };
+    }
+}
+
 pub struct CachedMouse {
     path: CString,
     device_index: u8,
@@ -106,14 +143,12 @@ pub fn query_device(cache: &mut Option<CachedMouse>) -> Option<Device> {
 
     unsafe {
         if let Some(cached) = cache.as_ref() {
-            let mouse = hid_open_path(cached.path.as_ptr());
-            if !mouse.is_null() {
+            if let Some(mouse) = HidDevice::open_path(cached.path.as_ptr()) {
                 let battery = read_battery(
-                    mouse,
+                    mouse.as_ptr(),
                     cached.device_index,
                     Some(cached.battery_feature),
                 );
-                hid_close(mouse);
                 if let Some((battery, _)) = battery {
                     return Some(Device {
                         product_name: cached.product_name.clone(),
@@ -124,12 +159,11 @@ pub fn query_device(cache: &mut Option<CachedMouse>) -> Option<Device> {
             *cache = None;
         }
 
-        let devices = hid_enumerate(LOGITECH_VENDOR_ID, 0);
-        if devices.is_null() {
+        let Some(devices) = HidEnumeration::new(LOGITECH_VENDOR_ID, 0) else {
             return None;
-        }
+        };
 
-        let mut device_info = devices;
+        let mut device_info = devices.as_ptr();
         let mut result = None;
         while !device_info.is_null() && result.is_none() {
             let info = &*device_info;
@@ -144,13 +178,12 @@ pub fn query_device(cache: &mut Option<CachedMouse>) -> Option<Device> {
                     info.product_id,
                     info.usage
                 );
-                let mouse = hid_open_path(info.path);
-                if !mouse.is_null() {
+                if let Some(mouse) = HidDevice::open_path(info.path) {
                     if is_receiver {
-                        result = probe_receiver_slots(mouse, info.path, cache);
+                        result = probe_receiver_slots(mouse.as_ptr(), info.path, cache);
                     } else {
                         result = cache_probe(
-                            probe_device(mouse, HIDPP_DIRECT_INDEX),
+                            probe_device(mouse.as_ptr(), HIDPP_DIRECT_INDEX),
                             info.path,
                             HIDPP_DIRECT_INDEX,
                             cache,
@@ -163,13 +196,11 @@ pub fn query_device(cache: &mut Option<CachedMouse>) -> Option<Device> {
                             info.product_id
                         );
                     }
-                    hid_close(mouse);
                 }
             }
             device_info = (*device_info).next;
         }
 
-        hid_free_enumeration(devices);
         result
     }
 }

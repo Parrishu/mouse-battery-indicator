@@ -23,23 +23,30 @@ use log::{debug, error, info, warn};
 use tray_icon::{TrayIcon, TrayIconBuilder, menu::MenuEvent};
 use winit::{
     application::ApplicationHandler,
-    event::{StartCause, WindowEvent},
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    event::StartCause,
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     window::Theme,
 };
 
 use crate::{mouse_control::BatteryStatus, notify::Notifier, settings::Settings};
-use std::sync::mpsc;
+
+const DEVICE_POLL_INTERVAL: Duration = Duration::from_secs(60);
+
+pub(super) enum AppEvent {
+    DeviceUpdate(Option<mouse_control::Device>),
+    UpdateCheck(bool),
+}
 
 struct AppState {
     tray_icon: TrayIcon,
     context_menu: menu::ContextMenu,
     settings: settings::Settings,
     notifier: Option<Notifier>,
-    device_update_receiver: Option<mpsc::Receiver<Option<mouse_control::Device>>>,
     last_battery_level: isize,
     last_battery_status: BatteryStatus,
-    update_receiver: Option<mpsc::Receiver<bool>>,
+    last_product_name: Option<String>,
+    has_applied_device_update: bool,
+    last_theme: Theme,
 }
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -53,18 +60,21 @@ pub fn run() -> anyhow::Result<()> {
         warn!("Failed to enable dark mode support: {:?}", err);
     }
 
-    let event_loop = EventLoop::new().context("Error initializing event loop")?;
+    let event_loop = EventLoop::<AppEvent>::with_user_event()
+        .build()
+        .context("Error initializing event loop")?;
 
-    let mut app = AppState::init()?;
+    let mut app = AppState::init(event_loop.create_proxy())?;
 
     Ok(event_loop.run_app(&mut app)?)
 }
 
 impl AppState {
-    pub fn init() -> anyhow::Result<Self> {
+    pub fn init(event_proxy: EventLoopProxy<AppEvent>) -> anyhow::Result<Self> {
         let settings = settings::Settings::load().context("loading config from registry")?;
+        let theme = system_theme();
 
-        let icon = Self::load_icon(settings, Theme::Dark, 0, BatteryStatus::Unavailable)
+        let icon = Self::load_icon(settings, theme, 0, BatteryStatus::Unavailable)
             .context("loading fallback icon")?;
 
         let context_menu = menu::ContextMenu::new(settings).context("creating context menu")?;
@@ -84,17 +94,21 @@ impl AppState {
         };
 
         // Check for updates in the background (non-blocking)
-        let update_receiver = version_check::check_for_updates_async(VERSION);
-        let (device_update_sender, device_update_receiver) = mpsc::sync_channel(1);
+        version_check::check_for_updates_async(VERSION, event_proxy.clone());
+        let device_event_proxy = event_proxy;
         std::thread::Builder::new()
             .name("mouse-battery-poller".to_string())
             .spawn(move || {
                 let mut cached_mouse = None;
-                while device_update_sender
-                    .send(mouse_control::query_device(&mut cached_mouse))
-                    .is_ok()
-                {
-                    std::thread::sleep(Duration::from_secs(1));
+                loop {
+                    let result = mouse_control::query_device(&mut cached_mouse);
+                    if device_event_proxy
+                        .send_event(AppEvent::DeviceUpdate(result))
+                        .is_err()
+                    {
+                        break;
+                    }
+                    std::thread::sleep(DEVICE_POLL_INTERVAL);
                 }
             })
             .context("starting mouse battery polling thread")?;
@@ -104,14 +118,28 @@ impl AppState {
             context_menu,
             settings,
             notifier,
-            device_update_receiver: Some(device_update_receiver),
             last_battery_level: 0,
             last_battery_status: BatteryStatus::Unavailable,
-            update_receiver: Some(update_receiver),
+            last_product_name: None,
+            has_applied_device_update: false,
+            last_theme: theme,
         })
     }
 
     fn apply_device_update(&mut self, result: Option<mouse_control::Device>) -> anyhow::Result<()> {
+        let changed = !self.has_applied_device_update
+            || match &result {
+                None => {
+                    self.last_battery_level != 0
+                        || self.last_battery_status != BatteryStatus::Unavailable
+                        || self.last_product_name.is_some()
+                }
+                Some(device) => {
+                    self.last_battery_level != device.battery.level_percent as isize
+                        || self.last_battery_status != device.battery.status
+                        || self.last_product_name.as_deref() != Some(device.product_name.as_str())
+                }
+            };
         if self.notifier.is_none() {
             debug!("Notifier not initialized, attempting to initialize..");
             self.notifier = match Notifier::new() {
@@ -122,24 +150,28 @@ impl AppState {
                 }
             };
         }
+        if !changed {
+            return Ok(());
+        }
+        self.has_applied_device_update = false;
 
         match result {
             None => {
                 self.last_battery_level = 0;
                 self.last_battery_status = BatteryStatus::Unavailable;
+                self.last_product_name = None;
                 if let Some(notifier) = &mut self.notifier {
                     notifier.update(0, BatteryStatus::Unavailable, "");
                 }
 
-                self.tray_icon
-                    .set_tooltip(Some(lang::t(no_mouse_found)))?;
+                self.tray_icon.set_tooltip(Some(lang::t(no_mouse_found)))?;
             }
             Some(device) => {
                 let battery_level = device.battery.level_percent as isize;
                 let battery_status = device.battery.status;
                 self.last_battery_level = battery_level;
                 self.last_battery_status = battery_status;
-                let product_name = device.product_name.to_string();
+                self.last_product_name = Some(device.product_name.clone());
                 let tooltip_text = format!(
                     "{}{}",
                     device,
@@ -151,7 +183,7 @@ impl AppState {
                 );
 
                 if let Some(notifier) = &mut self.notifier {
-                    notifier.update(battery_level, battery_status, &product_name);
+                    notifier.update(battery_level, battery_status, &device.product_name);
                 }
 
                 self.tray_icon
@@ -160,17 +192,21 @@ impl AppState {
             }
         }
 
-        self.refresh_icon()
+        self.refresh_icon()?;
+        self.has_applied_device_update = true;
+        Ok(())
     }
 
     fn refresh_icon(&mut self) -> anyhow::Result<()> {
+        let theme = system_theme();
         let icon = Self::load_icon(
             self.settings,
-            system_theme(),
+            theme,
             self.last_battery_level,
             self.last_battery_status,
         )?;
         self.tray_icon.set_icon(Some(icon))?;
+        self.last_theme = theme;
         Ok(())
     }
 
@@ -190,55 +226,27 @@ impl AppState {
     }
 }
 
-impl ApplicationHandler<()> for AppState {
+impl ApplicationHandler<AppEvent> for AppState {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        // Kick off polling every 1 second
         event_loop.set_control_flow(ControlFlow::WaitUntil(
-            Instant::now() + Duration::from_secs(1),
+            Instant::now() + DEVICE_POLL_INTERVAL,
         ));
     }
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: winit::event::StartCause) {
         if let StartCause::ResumeTimeReached { .. } = cause {
-            // Overwrite the current polling time
-            //
-            // If not overwritten, it starts polling multiple times a second
-            // since the timer is already elapsed.
             event_loop.set_control_flow(ControlFlow::WaitUntil(
-                Instant::now() + Duration::from_secs(1),
+                Instant::now() + DEVICE_POLL_INTERVAL,
             ));
+            if self.last_theme != system_theme() {
+                if let Err(err) = self.refresh_icon() {
+                    error!("Failed to refresh icon after theme change: {err:?}");
+                }
+            }
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        // Check if update check has completed (non-blocking)
-        if let Some(receiver) = &self.update_receiver
-            && let Ok(has_update) = receiver.try_recv()
-        {
-            self.update_receiver = None; // Stop checking
-
-            if has_update && let Err(e) = self.context_menu.show_update_available() {
-                error!("Failed to show update menu item: {e:?}");
-            }
-        }
-
-        let device_update = self
-            .device_update_receiver
-            .as_ref()
-            .map(mpsc::Receiver::try_recv);
-        match device_update {
-            Some(Ok(result)) => {
-                if let Err(err) = self.apply_device_update(result) {
-                    error!("Failed to update status: {err:?}");
-                }
-            }
-            Some(Err(mpsc::TryRecvError::Disconnected)) => {
-                self.device_update_receiver = None;
-                error!("Mouse battery polling thread stopped");
-            }
-            Some(Err(mpsc::TryRecvError::Empty)) | None => {}
-        }
-
-        if let Ok(event) = MenuEvent::receiver().try_recv() {
+        while let Ok(event) = MenuEvent::receiver().try_recv() {
             match event.id {
                 id if id == self.context_menu.menu_enable_notifications.id() => {
                     self.settings.notifications_enabled = !self.settings.notifications_enabled;
@@ -292,11 +300,30 @@ impl ApplicationHandler<()> for AppState {
             }
         }
     }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
+        match event {
+            AppEvent::DeviceUpdate(result) => {
+                if let Err(err) = self.apply_device_update(result) {
+                    error!("Failed to update status: {err:?}");
+                }
+            }
+            AppEvent::UpdateCheck(has_update) => {
+                if has_update && let Err(err) = self.context_menu.show_update_available() {
+                    error!("Failed to show update menu item: {err:?}");
+                }
+            }
+        }
+        event_loop.set_control_flow(ControlFlow::WaitUntil(
+            Instant::now() + DEVICE_POLL_INTERVAL,
+        ));
+    }
+
     fn window_event(
         &mut self,
         _event_loop: &ActiveEventLoop,
         _window_id: winit::window::WindowId,
-        _event: WindowEvent,
+        _event: winit::event::WindowEvent,
     ) {
         // Since we don't have a window attached, this will never be called
     }
