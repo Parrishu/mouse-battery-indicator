@@ -2,7 +2,8 @@
 
 **See your Logitech mouse battery level right in the Windows system tray.**
 
-![Mouse Battery Indicator in the Windows taskbar](docs/icon-screenshot.png)
+<img width="217" height="121" alt="image" src="https://github.com/user-attachments/assets/875b0368-e353-45ab-93d5-7027b910e03f" />
+
 
 ## Features
 
