@@ -8,7 +8,7 @@
 AppId=88ECD258-57B9-4DDB-ABA3-67DC0289A92C
 AppName={#MyAppDisplayName}
 ; keep this up to date
-AppVersion=1.0.3
+AppVersion=1.0.4
 WizardStyle=modern
 DefaultDirName={localappdata}\Programs\MouseBatteryIndicator
 DefaultGroupName={#MyAppDisplayName}
